@@ -1,0 +1,64 @@
+#Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+.flattened-pom.xml
+
+# Eclipse
+.project
+.classpath
+.settings/
+bin/
+
+# IntelliJ
+.idea
+*.ipr
+*.iml
+*.iws
+
+# NetBeans
+nb-configuration.xml
+
+# Visual Studio Code
+.vscode
+.factorypath
+
+# OSX
+.DS_Store
+
+# Vim
+*.swp
+*.swo
+
+# patch
+*.orig
+*.rej
+
+# Local environment
+.env
+
+# Plugin directory
+/.quarkus/cli/plugins/
+src/main/resources/application.properties
+/quarkus.log.1
+/quarkus.log.2
+/quarkus.log.3
+/quarkus.log.4
+/quarkus.log.5
+/quarkus.log.6
+/quarkus.log.7
+/quarkus.log.8
+/quarkus.log.9
+/quarkus.log.10
+/quarkus.log.11
+/quarkus.log.12
+/quarkus.log.13
+/quarkus.log.14
+/quarkus.log.15
+/quarkus.log.16
+/quarkus.log.17
+/quarkus.log.18
+/quarkus.log.19
+/quarkus.log.20
