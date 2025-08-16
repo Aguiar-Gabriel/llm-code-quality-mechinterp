@@ -1,148 +1,172 @@
+# src/feature_lens/pipelines/extract_activations/nodes.py
 from __future__ import annotations
-
-import math
-import os
-import pickle
 from pathlib import Path
-from typing import Iterable, List, Sequence
-
+import pickle
+from typing import Iterable, List, Dict, Any
+from typing import Dict, Optional
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
-
-def _device(use_gpu: bool) -> torch.device:
-    if use_gpu and torch.cuda.is_available():
-        return torch.device("cuda")
-    return torch.device("cpu")
-
-
-def _iter_shards(n_items: int, shard_size: int) -> Iterable[tuple[int, int, slice]]:
-    n_shards = max(1, math.ceil(n_items / shard_size))
-    for k in range(n_shards):
-        start = k * shard_size
-        end = min(n_items, (k + 1) * shard_size)
-        yield k, n_shards, slice(start, end)
-
+def _batch_iter(n: int, batch_size: int) -> Iterable[range]:
+    i = 0
+    while i < n:
+        j = min(i + batch_size, n)
+        yield range(i, j)
+        i = j
 
 def extract_activations(
     tokenized_pkl_path: str,
     model_name_or_path: str,
     output_root: str,
-    layers: Sequence[int] | None = None,
+    layers: List[int],
     shard_size: int = 16,
+    batch_size: int = 8,                 # << agora aceitamos batch_size
     local_files_only: bool = False,
     use_gpu_for_forward: bool = True,
+    torch_dtype: str = "float32",
 ) -> None:
     """
-    Extract MLP activations for specified layers and save to shards.
-
-    Notes
-    - Targets GPT-2–style models (module names like `transformer.h.{i}.mlp`).
-    - TransformerLens is not used here; only HF forward (GPU allowed).
-    - Saves shards under `{output_root}/layer_{i}/shard_{k}.pkl`.
+    Lê o pickle tokenizado, faz forward e salva ativações por camada e shard:
+      {output_root}/layer_{L}/shard_{K}.pkl
+    Cada shard contém um dict com chaves:
+      - "indices": lista de índices das amostras naquele shard
+      - "activations": tensor ou lista com ativações daquela camada
     """
+    # 1) carregar tokens
     with open(tokenized_pkl_path, "rb") as f:
-        payload = pickle.load(f)
+        enc = pickle.load(f)
+    input_ids = enc["input_ids"]
+    attention_mask = enc.get("attention_mask", None)
+    n_samples = len(input_ids)
 
-    input_ids: List[List[int]] = payload["input_ids"]
-    attention_mask = payload.get("attention_mask")
-    device = _device(use_gpu_for_forward)
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name_or_path, use_fast=True, local_files_only=local_files_only
-    )
-    if tokenizer.pad_token is None and tokenizer.eos_token is not None:
-        tokenizer.pad_token = tokenizer.eos_token
+    # 2) modelo e device
+    dtype_map = {
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+        "float32": torch.float32,
+    }
+    dtype = dtype_map.get(torch_dtype, torch.float32)
+    device = torch.device("cuda") if (use_gpu_for_forward and torch.cuda.is_available()) else torch.device("cpu")
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_name_or_path, local_files_only=local_files_only
-    )
-    model.eval().to(device)
+        model_name_or_path,
+        torch_dtype=dtype,
+        local_files_only=local_files_only,
+    ).to(device)
+    model.eval()
 
-    # Determine available MLP layers by name to be robust to max layer index
-    mlp_modules = {name: module for name, module in model.named_modules() if name.endswith(".mlp")}
-    # Map index -> name for GPT-2 style blocks
-    index_to_name = {}
-    for name in mlp_modules.keys():
-        # Expect names like 'transformer.h.0.mlp'
-        parts = name.split(".")
-        try:
-            idx = int(parts[parts.index("h") + 1])
-            index_to_name[idx] = name
-        except Exception:
-            continue
+    # sanity de camadas
+    n_layer = getattr(getattr(model, "transformer", model), "n_layer", None)
+    if n_layer is None and hasattr(model.config, "n_layer"):
+        n_layer = model.config.n_layer
+    if n_layer is not None:
+        assert max(layers) < n_layer, f"layers={layers} excede n_layer={n_layer} para {model_name_or_path}"
 
-    if layers is None:
-        # Default: first 6 layers if available
-        layers = [i for i in range(min(6, len(index_to_name)))]
+    # 3) hooks para capturar MLP de cada bloco
+    captured: Dict[int, List[torch.Tensor]] = {L: [] for L in layers}
+    handles = []
 
-    output_root_path = Path(output_root)
-    output_root_path.mkdir(parents=True, exist_ok=True)
+    # tenta GPT-2 style: model.transformer.h[L].mlp
+    blocks = None
+    if hasattr(model, "transformer") and hasattr(model.transformer, "h"):
+        blocks = model.transformer.h
+    elif hasattr(model, "model") and hasattr(model.model, "layers"):
+        blocks = model.model.layers  # fallback arquiteturas diferentes
 
-    @torch.no_grad()
-    def run_batch(ids_batch: torch.Tensor, mask_batch: torch.Tensor | None):
-        hooks = []
-        activations = {}
+    if blocks is None:
+        raise RuntimeError("Não encontrei blocos de Transformer no modelo para registrar hooks.")
 
-        def make_hook(layer_idx: int):
-            def hook_fn(module, inp, out):
-                activations.setdefault(layer_idx, []).append(out.detach().cpu())
+    def _make_hook(layer_idx: int):
+        def hook(module, inp, out):
+            # out: [batch, seq, hidden] ou similar; guardamos como está
+            captured[layer_idx].append(out.detach().to("cpu"))
+        return hook
 
-            return hook_fn
-
-        # Register hooks for selected layers
-        for idx in layers:
-            name = index_to_name.get(int(idx))
-            if name is None:
+    for L in layers:
+        mlp = None
+        blk = blocks[L]
+        # tentativas comuns de submódulo MLP
+        for attr in ["mlp", "mlp.c_fc", "ffn", "feed_forward", "mlp.act"]:
+            try:
+                mlp = eval("blk." + attr)
+                if mlp is not None:
+                    break
+            except Exception:
                 continue
-            module = dict(model.named_modules())[name]
-            hooks.append(module.register_forward_hook(make_hook(int(idx))))
+        if mlp is None:
+            # se não achar submódulo, pendura no próprio bloco
+            mlp = blk
+        handles.append(mlp.register_forward_hook(_make_hook(L)))
 
-        _ = model(input_ids=ids_batch.to(device), attention_mask=(mask_batch.to(device) if mask_batch is not None else None))
+    # 4) forward em lotes e shards
+    out_root = Path(output_root)
+    out_root.mkdir(parents=True, exist_ok=True)
+    for L in layers:
+        (out_root / f"layer_{L}").mkdir(parents=True, exist_ok=True)
 
-        for h in hooks:
-            h.remove()
-        # Concatenate along batch dim for each layer
-        for k in list(activations.keys()):
-            activations[k] = torch.cat(activations[k], dim=0)
-        return activations
+    idx_all = list(range(n_samples))
+    shard_id = 0
+    with torch.no_grad():
+        for shard_start in range(0, n_samples, shard_size):
+            shard_end = min(shard_start + shard_size, n_samples)
+            shard_indices = idx_all[shard_start:shard_end]
 
-    # Convert to tensors
-    all_ids = torch.tensor(input_ids, dtype=torch.long)
-    all_mask = torch.tensor(attention_mask, dtype=torch.long) if attention_mask is not None else None
+            # zera buffers de captura para este shard
+            for L in layers:
+                captured[L].clear()
 
-    # Iterate shards and save per-layer files
-    n_items = all_ids.shape[0]
-    for shard_idx, n_shards, sl in _iter_shards(n_items, shard_size):
-        ids_batch = all_ids[sl]
-        mask_batch = all_mask[sl] if all_mask is not None else None
-        acts = run_batch(ids_batch, mask_batch)
+            # processa este shard em batches menores
+            for batch_idx in _batch_iter(len(shard_indices), batch_size):
+                sel = [shard_indices[k] for k in batch_idx]
+                ids = torch.tensor([input_ids[i] for i in sel], dtype=torch.long, device=device)
+                att = None
+                if attention_mask is not None:
+                    att = torch.tensor([attention_mask[i] for i in sel], dtype=torch.long, device=device)
+                _ = model(input_ids=ids, attention_mask=att)
 
-        for layer_idx, tensor in acts.items():
-            layer_dir = output_root_path / f"layer_{layer_idx}"
-            layer_dir.mkdir(parents=True, exist_ok=True)
-            out_file = layer_dir / f"shard_{shard_idx}.pkl"
-            with out_file.open("wb") as f:
-                pickle.dump({
-                    "layer": layer_idx,
-                    "shard": shard_idx,
-                    "n_shards": n_shards,
-                    "shape": tuple(tensor.shape),
-                    "activations": tensor,
-                }, f)
+            # salva cada camada deste shard
+            for L in layers:
+                # concatena capturas ao longo de batches
+                if len(captured[L]) == 0:
+                    acts_cat = None
+                else:
+                    try:
+                        acts_cat = torch.cat(captured[L], dim=0)  # [shard_size, seq, hidden]
+                    except Exception:
+                        # se forem listas não concatenáveis, salva a lista
+                        acts_cat = captured[L]
+                payload = {
+                    "indices": shard_indices,
+                    "activations": acts_cat,
+                }
+                p = out_root / f"layer_{L}" / f"shard_{shard_id}.pkl"
+                with open(p, "wb") as f:
+                    pickle.dump(payload, f)
+
+            shard_id += 1
+
+    # limpa hooks
+    for h in handles:
+        h.remove()
 
 
-def run_extract_from_params(params_extract: dict):
-    """Kedro wrapper to run extraction based on parameters.
-
-    Returns a mapping of partition key to None so the PartitionedDataSet can
-    pick up on-disk files without re-serializing large tensors.
+def run_extract_from_params(params_extract: Dict[str, Any]) -> Dict[str, Any]:
     """
-    extract_activations(**params_extract)
+    Executa a extração e retorna um mapeamento {chave_partição: payload}
+    para o PartitionedDataset salvar sem reclamar.
+    """
+    allowed = {
+        "tokenized_pkl_path", "model_name_or_path", "output_root",
+        "layers", "shard_size", "batch_size", "local_files_only",
+        "use_gpu_for_forward", "torch_dtype"
+    }
+    safe = {k: v for k, v in params_extract.items() if k in allowed}
+    extract_activations(**safe)
+
     root = Path(params_extract["output_root"])
-    partitions = {}
+    partitions: Dict[str, Any] = {}
     for pkl in root.rglob("*.pkl"):
-        # Partition key should be relative path with forward slashes
-        key = str(pkl.relative_to(root)).replace("\\", "/")
-        partitions[key] = None
+        key = str(pkl.relative_to(root))  # ex: layer_0/shard_0.pkl
+        with open(pkl, "rb") as f:
+            partitions[key] = pickle.load(f)  # <- devolve o payload
     return partitions

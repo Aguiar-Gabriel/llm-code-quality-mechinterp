@@ -6,19 +6,25 @@ collect_prompts:
 
 tokenize:
   prompts_csv_path: "data/01_raw/prompts.csv"
-  model_name_or_path: "sshleifer/tiny-gpt2"  # replace with cached local model if needed
+  model_name_or_path: "sshleifer/tiny-gpt2"
   max_length: 128
   output_pkl_path: "data/02_intermediate/prompts_tokenized.pkl"
-  local_files_only: true
-
+  local_files_only: false      # primeira rodada baixa o modelo
+  pad_to_max: true
+  truncate: true
+  pad_token_to_eos: true
+  
 extract_activations:
   tokenized_pkl_path: "data/02_intermediate/prompts_tokenized.pkl"
-  model_name_or_path: "sshleifer/tiny-gpt2"  # replace with cached local model if needed
+  model_name_or_path: "sshleifer/tiny-gpt2"
   output_root: "data/03_primary/activations"
-  layers: [0, 1, 2, 3, 4, 5]
-  shard_size: 16
-  local_files_only: true
-  use_gpu_for_forward: true
+  layers: [0, 1]
+  shard_size: 8
+  batch_size: 4
+  local_files_only: false
+  use_gpu_for_forward: false
+  torch_dtype: "float32"
+
 
 metrics:
   prompts_csv_path: "data/01_raw/prompts.csv"
@@ -29,3 +35,16 @@ metrics:
 # Overrides and run-time controls
 collect:
   n_limit: 12
+
+# Optional pre-step to generate sonar metrics JSONL
+metrics_generate:
+  mode: "stub"  # one of: stub, copy, maven
+  output_jsonl_path: "data/02_intermediate/sonar_metrics.jsonl"
+  prompts_csv_path: "data/01_raw/prompts.csv"
+  # For mode=copy, set a path to an existing JSONL to copy from
+  source_jsonl_path: null
+  # For mode=maven, set the sonar repo root and command if needed
+  sonar_repo_root: "data/igorregis-sonarvsllm-9e4d173"
+  project_relpath: "sonarvsllm-testcases"
+  maven_command: "./mvnw verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=igorregis_sonarvsllm"
+  overwrite: false

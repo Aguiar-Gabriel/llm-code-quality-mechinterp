@@ -1,22 +1,21 @@
 prompts_raw:
   type: pandas.CSVDataset
   filepath: data/01_raw/prompts.csv
-  save_args:
-    index: false
+  save_args: { index: false }
 
 prompts_tokenized:
   type: pickle.PickleDataset
   filepath: data/02_intermediate/prompts_tokenized.pkl
 
 activations:
-  type: PartitionedDataset
-  path: data/03_primary/activations
+  type: kedro_datasets.partitions.PartitionedDataset
   dataset: pickle.PickleDataset
+  path: data/03_primary/activations
+  filename_suffix: ".pkl"
 
 sonar_metrics:
-  type: JSONDataset
-  filepath: data/02_intermediate/sonar_metrics.jsonl
-  load_args:
-    lines: true
+  type: kedro_datasets.json.JSONDataset
+  filepath: data/08_reporting/sonar_metrics.json
   save_args:
-    lines: true
+    indent: 2
+

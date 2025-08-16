@@ -5,7 +5,7 @@ from kedro.pipeline import Pipeline, node
 from feature_lens.pipelines.collect_prompts.nodes import run_collect_from_params
 from feature_lens.pipelines.tokenize.nodes import run_tokenize_from_params
 from feature_lens.pipelines.extract_activations.nodes import run_extract_from_params
-from feature_lens.pipelines.metrics.nodes import run_join_from_params
+from feature_lens.pipelines.metrics.nodes import run_join_from_params, run_generate_from_params
 
 
 def collect_pipeline() -> Pipeline:
@@ -46,12 +46,19 @@ def activations_pipeline() -> Pipeline:
 
 def metrics_pipeline() -> Pipeline:
     return Pipeline([
+        # Optional generator: controlled by params:metrics_generate.mode
+        node(
+            func=run_generate_from_params,
+            inputs={"params": "params:metrics_generate"},
+            outputs=None,
+            name="maybe_generate_sonar_metrics_node",
+        ),
         node(
             func=run_join_from_params,
             inputs={"params_metrics": "params:metrics"},
             outputs="sonar_metrics",
             name="join_with_sonar_node",
-        )
+        ),
     ])
 
 
