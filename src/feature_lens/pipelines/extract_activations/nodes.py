@@ -47,6 +47,9 @@ def extract_activations(
     }
     dtype = dtype_map.get(torch_dtype, torch.float32)
     device = torch.device("cuda") if (use_gpu_for_forward and torch.cuda.is_available()) else torch.device("cpu")
+    # Evita dtype incompatível no CPU (ex.: float16)
+    if device.type == "cpu" and dtype is torch.float16:
+        dtype = torch.float32
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
