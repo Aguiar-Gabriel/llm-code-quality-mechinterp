@@ -50,12 +50,15 @@ def metrics_pipeline() -> Pipeline:
         node(
             func=run_generate_from_params,
             inputs={"params": "params:metrics_generate"},
-            outputs=None,
+            outputs="metrics_generated",
             name="maybe_generate_sonar_metrics_node",
         ),
         node(
             func=run_join_from_params,
-            inputs={"params_metrics": "params:metrics"},
+            inputs={
+                "params_metrics": "params:metrics",
+                "ready": "metrics_generated",
+            },
             outputs="sonar_metrics",
             name="join_with_sonar_node",
         ),

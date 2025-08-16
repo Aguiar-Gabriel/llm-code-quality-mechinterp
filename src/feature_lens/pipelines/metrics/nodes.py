@@ -53,8 +53,12 @@ def join_with_sonar(
                 n_out += 1
 
 
-def run_join_from_params(params_metrics: dict):
-    """Kedro wrapper to run join and then return path content as list of dicts."""
+def run_join_from_params(params_metrics: dict, ready: object | None = None):
+    """Kedro wrapper to run join and then return path content as list of dicts.
+
+    `ready` is a dummy dependency to enforce execution order after the optional
+    generator node; it is otherwise ignored.
+    """
     join_with_sonar(**params_metrics)
     out = Path(params_metrics["output_jsonl_path"]).read_text(encoding="utf-8").splitlines()
     return [json.loads(l) for l in out if l.strip()]
@@ -166,4 +170,5 @@ def generate_sonar_metrics(
 def run_generate_from_params(params: dict):
     """Kedro wrapper to generate sonar metrics if needed (optional step)."""
     generate_sonar_metrics(**params)
-    return None
+    # Return a simple flag to establish dependency in the pipeline
+    return {"status": "ok", "path": params.get("output_jsonl_path")}
