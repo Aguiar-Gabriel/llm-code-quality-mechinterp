@@ -179,6 +179,7 @@ def run_generate_from_params(params: dict):
     merged = dict(params or {})
     merged.setdefault("output_jsonl_path", "data/02_intermediate/sonar_metrics.jsonl")
     merged.setdefault("prompts_csv_path", "data/01_raw/prompts.csv")
+    merged.setdefault("overwrite", True)
     generate_sonar_metrics(**merged)
     # Return a simple flag to establish dependency in the pipeline
     return {"status": "ok", "path": merged.get("output_jsonl_path")}
