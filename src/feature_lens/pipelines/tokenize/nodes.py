@@ -63,10 +63,15 @@ def run_tokenize_from_params(params_tokenize: dict):
         "truncate",
         "pad_token_to_eos",
     }
-    safe_kwargs = {k: v for k, v in params_tokenize.items() if k in allowed}
+    # Provide sensible defaults if local overrides omit required keys
+    merged = dict(params_tokenize or {})
+    merged.setdefault("prompts_csv_path", "data/01_raw/prompts.csv")
+    merged.setdefault("output_pkl_path", "data/02_intermediate/prompts_tokenized.pkl")
+    merged.setdefault("max_length", 128)
+    safe_kwargs = {k: v for k, v in merged.items() if k in allowed}
 
     tokenize_prompts(**safe_kwargs)
 
     import pickle as _p
-    with open(params_tokenize["output_pkl_path"], "rb") as f:
+    with open(merged["output_pkl_path"], "rb") as f:
         return _p.load(f)
