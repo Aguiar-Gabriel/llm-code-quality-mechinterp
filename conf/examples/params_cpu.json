@@ -1,0 +1,21 @@
+{
+  "tokenize": {
+    "model_name_or_path": "sshleifer/tiny-gpt2",
+    "max_length": 128,
+    "local_files_only": true
+  },
+  "extract_activations": {
+    "model_name_or_path": "sshleifer/tiny-gpt2",
+    "layers": [0,1],
+    "batch_size": 1,
+    "shard_size": 2,
+    "local_files_only": true,
+    "torch_dtype": "float32",
+    "device_mode": "cpu",
+    "use_gpu_for_forward": false
+  },
+  "metrics_generate": {
+    "mode": "stub"
+  }
+}
+

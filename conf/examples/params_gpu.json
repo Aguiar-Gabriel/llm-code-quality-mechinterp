@@ -1,0 +1,21 @@
+{
+  "tokenize": {
+    "model_name_or_path": "gpt2",
+    "max_length": 128,
+    "local_files_only": false
+  },
+  "extract_activations": {
+    "model_name_or_path": "gpt2",
+    "layers": [0,1,2,3,4,5,6,7,8,9,10,11],
+    "batch_size": 1,
+    "shard_size": 1,
+    "local_files_only": false,
+    "torch_dtype": "float16",
+    "device_mode": "cuda",
+    "allow_cpu_fallback": false
+  },
+  "metrics_generate": {
+    "mode": "stub"
+  }
+}
+
