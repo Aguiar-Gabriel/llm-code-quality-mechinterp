@@ -43,9 +43,11 @@ def join_with_sonar(
     out_path = Path(output_jsonl_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Read all source objects first to avoid in-place truncation when src == out
+    objs = list(_read_jsonl(src))
     n_in, n_out = 0, 0
     with out_path.open("w", encoding="utf-8") as out:
-        for obj in _read_jsonl(src):
+        for obj in objs:
             n_in += 1
             cp = str(obj.get(class_path_field, ""))
             if cp in wanted:
