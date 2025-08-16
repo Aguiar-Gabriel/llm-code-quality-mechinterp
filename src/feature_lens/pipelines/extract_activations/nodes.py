@@ -4,6 +4,7 @@ from pathlib import Path
 import pickle
 from typing import Iterable, List, Dict, Any
 from typing import Dict, Optional
+import logging
 import torch
 from transformers import AutoModelForCausalLM
 
@@ -55,8 +56,30 @@ def extract_activations(
         model_name_or_path,
         torch_dtype=dtype,
         local_files_only=local_files_only,
-    ).to(device)
+    )
+    # Move para device com fallback seguro se CUDA falhar neste ambiente
+    try:
+        model = model.to(device)
+    except Exception as e:
+        if device.type == "cuda":
+            logging.warning(f"Falha ao mover modelo para CUDA: {e}. Fazendo fallback para CPU.")
+            device = torch.device("cpu")
+            if dtype is torch.float16:
+                dtype = torch.float32
+            model = model.to(device)
+        else:
+            raise
     model.eval()
+
+    logging.info(
+        "extract_activations: device=%s, dtype=%s, shard_size=%s, batch_size=%s, layers=%s, n_samples=%s",
+        device,
+        str(dtype).replace("torch.", ""),
+        shard_size,
+        batch_size,
+        layers,
+        n_samples,
+    )
 
     # sanity de camadas
     n_layer = getattr(getattr(model, "transformer", model), "n_layer", None)
@@ -145,6 +168,14 @@ def extract_activations(
                 p = out_root / f"layer_{L}" / f"shard_{shard_id}.pkl"
                 with open(p, "wb") as f:
                     pickle.dump(payload, f)
+                if isinstance(acts_cat, torch.Tensor):
+                    logging.info(
+                        "salvo shard=%s layer=%s shape=%s em %s",
+                        shard_id,
+                        L,
+                        tuple(acts_cat.shape),
+                        str(p),
+                    )
 
             shard_id += 1
 
