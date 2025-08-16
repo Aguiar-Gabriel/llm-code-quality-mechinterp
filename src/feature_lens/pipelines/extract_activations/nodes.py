@@ -25,6 +25,8 @@ def extract_activations(
     local_files_only: bool = False,
     use_gpu_for_forward: bool = True,
     torch_dtype: str = "float32",
+    device_mode: str | None = None,      # "auto" | "cuda" | "cpu"
+    allow_cpu_fallback: bool = True,
 ) -> None:
     """
     Lê o pickle tokenizado, faz forward e salva ativações por camada e shard:
@@ -47,7 +49,30 @@ def extract_activations(
         "float32": torch.float32,
     }
     dtype = dtype_map.get(torch_dtype, torch.float32)
-    device = torch.device("cuda") if (use_gpu_for_forward and torch.cuda.is_available()) else torch.device("cpu")
+    # Log de ambiente CUDA/Torch
+    try:
+        logging.info(
+            "env: torch=%s, torch.cuda=%s, cuda_available=%s, devices=%s",
+            torch.__version__,
+            getattr(torch.version, "cuda", None),
+            torch.cuda.is_available(),
+            torch.cuda.device_count(),
+        )
+    except Exception:
+        pass
+
+    # Seleção de device
+    mode = (device_mode or "auto").lower()
+    if mode not in {"auto", "cuda", "cpu"}:
+        mode = "auto"
+    if mode == "cpu":
+        device = torch.device("cpu")
+    elif mode == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("device_mode=cuda, mas CUDA não está disponível nesta máquina.")
+        device = torch.device("cuda")
+    else:  # auto (backcompat com use_gpu_for_forward)
+        device = torch.device("cuda") if (use_gpu_for_forward and torch.cuda.is_available()) else torch.device("cpu")
     # Evita dtype incompatível no CPU (ex.: float16)
     if device.type == "cpu" and dtype is torch.float16:
         dtype = torch.float32
@@ -61,19 +86,28 @@ def extract_activations(
     try:
         model = model.to(device)
     except Exception as e:
-        if device.type == "cuda":
+        if device.type == "cuda" and allow_cpu_fallback:
             logging.warning(f"Falha ao mover modelo para CUDA: {e}. Fazendo fallback para CPU.")
             device = torch.device("cpu")
             if dtype is torch.float16:
                 dtype = torch.float32
             model = model.to(device)
         else:
+            logging.error("Erro ao mover modelo para device=%s: %s", device, e)
             raise
     model.eval()
 
+    gpu_name = None
+    if device.type == "cuda":
+        try:
+            idx = device.index if device.index is not None else 0
+            gpu_name = torch.cuda.get_device_name(idx)
+        except Exception:
+            gpu_name = "unknown"
     logging.info(
-        "extract_activations: device=%s, dtype=%s, shard_size=%s, batch_size=%s, layers=%s, n_samples=%s",
+        "extract_activations: device=%s%s, dtype=%s, shard_size=%s, batch_size=%s, layers=%s, n_samples=%s",
         device,
+        f"({gpu_name})" if gpu_name else "",
         str(dtype).replace("torch.", ""),
         shard_size,
         batch_size,
@@ -148,7 +182,14 @@ def extract_activations(
                 att = None
                 if attention_mask is not None:
                     att = torch.tensor([attention_mask[i] for i in sel], dtype=torch.long, device=device)
-                _ = model(input_ids=ids, attention_mask=att)
+                try:
+                    _ = model(input_ids=ids, attention_mask=att)
+                except RuntimeError as re:
+                    msg = str(re)
+                    logging.error("Erro no forward (device=%s, dtype=%s): %s", device, dtype, msg)
+                    if "CUDA out of memory" in msg or "c10::Error" in msg:
+                        logging.error("Possível OOM: reduza batch_size/shard_size ou max_length.")
+                    raise
 
             # salva cada camada deste shard
             for L in layers:
@@ -192,7 +233,7 @@ def run_extract_from_params(params_extract: Dict[str, Any]) -> Dict[str, Any]:
     allowed = {
         "tokenized_pkl_path", "model_name_or_path", "output_root",
         "layers", "shard_size", "batch_size", "local_files_only",
-        "use_gpu_for_forward", "torch_dtype"
+        "use_gpu_for_forward", "torch_dtype", "device_mode", "allow_cpu_fallback"
     }
     safe = {k: v for k, v in params_extract.items() if k in allowed}
     extract_activations(**safe)
