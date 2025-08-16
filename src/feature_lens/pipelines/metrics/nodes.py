@@ -73,7 +73,7 @@ def _write_jsonl(path: Path, rows: Iterable[dict]) -> None:
 
 def generate_sonar_metrics(
     mode: str,
-    output_jsonl_path: str,
+    output_jsonl_path: Optional[str] = None,
     prompts_csv_path: Optional[str] = None,
     source_jsonl_path: Optional[str] = None,
     sonar_repo_root: Optional[str] = None,
@@ -90,7 +90,8 @@ def generate_sonar_metrics(
                from `source_jsonl_path` if provided; otherwise, leave the file as produced.
     - 'stub': create a minimal JSONL using `prompts_csv_path` with placeholder metrics.
     """
-    out = Path(output_jsonl_path)
+    # Choose output path, fallback to common default if not provided
+    out = Path(output_jsonl_path or "data/02_intermediate/sonar_metrics.jsonl")
     if out.exists() and not overwrite:
         return
 
@@ -168,7 +169,14 @@ def generate_sonar_metrics(
 
 
 def run_generate_from_params(params: dict):
-    """Kedro wrapper to generate sonar metrics if needed (optional step)."""
-    generate_sonar_metrics(**params)
+    """Kedro wrapper to generate sonar metrics if needed (optional step).
+
+    Be tolerant to minimal local overrides by providing sensible defaults
+    for missing keys like `output_jsonl_path` and `prompts_csv_path`.
+    """
+    merged = dict(params or {})
+    merged.setdefault("output_jsonl_path", "data/02_intermediate/sonar_metrics.jsonl")
+    merged.setdefault("prompts_csv_path", "data/01_raw/prompts.csv")
+    generate_sonar_metrics(**merged)
     # Return a simple flag to establish dependency in the pipeline
-    return {"status": "ok", "path": params.get("output_jsonl_path")}
+    return {"status": "ok", "path": merged.get("output_jsonl_path")}
