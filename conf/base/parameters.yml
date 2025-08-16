@@ -1,0 +1,31 @@
+collect_prompts:
+  # Root of the igorregis sonarvsllm-testcases repository
+  sonarvsllm_repo_root: "data/igorregis-sonarvsllm-9e4d173"
+  output_csv_path: "data/01_raw/prompts.csv"
+  n_limit: null
+
+tokenize:
+  prompts_csv_path: "data/01_raw/prompts.csv"
+  model_name_or_path: "sshleifer/tiny-gpt2"  # replace with cached local model if needed
+  max_length: 128
+  output_pkl_path: "data/02_intermediate/prompts_tokenized.pkl"
+  local_files_only: true
+
+extract_activations:
+  tokenized_pkl_path: "data/02_intermediate/prompts_tokenized.pkl"
+  model_name_or_path: "sshleifer/tiny-gpt2"  # replace with cached local model if needed
+  output_root: "data/03_primary/activations"
+  layers: [0, 1, 2, 3, 4, 5]
+  shard_size: 16
+  local_files_only: true
+  use_gpu_for_forward: true
+
+metrics:
+  prompts_csv_path: "data/01_raw/prompts.csv"
+  sonar_metrics_jsonl_path: "data/02_intermediate/sonar_metrics.jsonl"  # set to source if precomputed
+  output_jsonl_path: "data/02_intermediate/sonar_metrics.jsonl"
+  class_path_field: "class_path"
+
+# Overrides and run-time controls
+collect:
+  n_limit: 12
