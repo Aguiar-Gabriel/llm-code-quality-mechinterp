@@ -71,8 +71,9 @@ def all_pipeline() -> Pipeline:
 
 
 def register_pipelines() -> dict[str, Pipeline]:
-    # Return named pipelines only; do not set __default__
+    # Return named pipelines with __default__ for convenience
     return {
+        "__default__": all_pipeline(),
         "collect": collect_pipeline(),
         "tokenize": tokenize_pipeline(),
         "activations": activations_pipeline(),

@@ -2,3 +2,15 @@ ipython>=8.10
 jupyterlab>=3.0
 notebook
 kedro~=1.0.0
+
+# ML/AI Dependencies
+torch==2.1.2+cu118
+transformers==4.38.2
+tokenizers==0.15.2
+accelerate==0.26.1
+numpy==1.26.4
+pandas>=1.3.0
+
+# Additional packages for feature extraction and analysis
+scikit-learn>=1.0.0
+pickle5; python_version < "3.8"

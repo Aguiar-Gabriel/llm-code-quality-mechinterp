@@ -5,7 +5,7 @@ import pickle
 from typing import Iterable, List, Dict, Any
 from typing import Dict, Optional
 import logging
-import torch
+import os, torch
 from transformers import AutoModelForCausalLM
 
 def _batch_iter(n: int, batch_size: int) -> Iterable[range]:
@@ -46,11 +46,18 @@ def extract_activations(
         "bfloat16": torch.bfloat16,
         "float32": torch.float32,
     }
+    use_gpu_env = os.getenv("USE_GPU", "1") == "1"
+    want_cuda = use_gpu_for_forward or use_gpu_env
+    device = torch.device("cuda" if (want_cuda and torch.cuda.is_available()) else "cpu")
     dtype = dtype_map.get(torch_dtype, torch.float32)
-    device = torch.device("cuda") if (use_gpu_for_forward and torch.cuda.is_available()) else torch.device("cpu")
-    # Evita dtype incompatível no CPU (ex.: float16)
+
+    # evita dtype FP16 no CPU
     if device.type == "cpu" and dtype is torch.float16:
         dtype = torch.float32
+
+    # guard opcional para não rodar "falso-GPU"
+    if want_cuda and device.type != "cuda":
+        raise RuntimeError("USE_GPU=1 ou use_gpu_for_forward=True, mas CUDA indisponível. Rode com USE_GPU=0 para CPU.")
 
     model = AutoModelForCausalLM.from_pretrained(
         model_name_or_path,
@@ -71,6 +78,8 @@ def extract_activations(
             raise
     model.eval()
 
+    print(f"[EXTRACT_ACTIVATIONS] device={device}, dtype={str(dtype).replace('torch.', '')}, shard_size={shard_size}, batch_size={batch_size}, layers={layers}, n_samples={n_samples}")
+    
     logging.info(
         "extract_activations: device=%s, dtype=%s, shard_size=%s, batch_size=%s, layers=%s, n_samples=%s",
         device,
@@ -80,6 +89,16 @@ def extract_activations(
         layers,
         n_samples,
     )
+    
+    # Log inicial de configuração GPU se disponível
+    if device.type == "cuda":
+        try:
+            dev_name = torch.cuda.get_device_name(0)
+            total_memory = torch.cuda.get_device_properties(0).total_memory / 2**20
+            print(f"[GPU_CONFIG] device={dev_name}, total_memory={total_memory:.1f}MB")
+            logging.info("GPU config: device=%s, total_memory=%.1fMB", dev_name, total_memory)
+        except Exception:
+            pass
 
     # sanity de camadas
     n_layer = getattr(getattr(model, "transformer", model), "n_layer", None)
@@ -104,8 +123,7 @@ def extract_activations(
 
     def _make_hook(layer_idx: int):
         def hook(module, inp, out):
-            # out: [batch, seq, hidden] ou similar; guardamos como está
-            captured[layer_idx].append(out.detach().to("cpu"))
+            captured[layer_idx].append(out.detach().to(device))
         return hook
 
     for L in layers:
@@ -149,7 +167,14 @@ def extract_activations(
                 if attention_mask is not None:
                     att = torch.tensor([attention_mask[i] for i in sel], dtype=torch.long, device=device)
                 _ = model(input_ids=ids, attention_mask=att)
-
+                if device.type == "cuda":
+                    try:
+                        alloc = torch.cuda.memory_allocated() / 2**20
+                        reserved = torch.cuda.memory_reserved() / 2**20
+                        dev_name = torch.cuda.get_device_name(0)
+                        print(f"[GPU] device={dev_name} allocMB={alloc:.1f} reservedMB={reserved:.1f}")
+                    except Exception:
+                        pass
             # salva cada camada deste shard
             for L in layers:
                 # concatena capturas ao longo de batches
@@ -161,13 +186,26 @@ def extract_activations(
                     except Exception:
                         # se forem listas não concatenáveis, salva a lista
                         acts_cat = captured[L]
+
+                # mover para CPU só para serializar
+                if isinstance(acts_cat, torch.Tensor):
+                    acts_for_save = acts_cat.to("cpu")
+                elif isinstance(acts_cat, list):
+                    acts_for_save = [
+                        a.to("cpu") if isinstance(a, torch.Tensor) and a.device.type != "cpu" else a
+                        for a in acts_cat
+                    ]
+                else:
+                    acts_for_save = acts_cat
+
                 payload = {
                     "indices": shard_indices,
-                    "activations": acts_cat,
+                    "activations": acts_for_save,
                 }
                 p = out_root / f"layer_{L}" / f"shard_{shard_id}.pkl"
                 with open(p, "wb") as f:
                     pickle.dump(payload, f)
+
                 if isinstance(acts_cat, torch.Tensor):
                     logging.info(
                         "salvo shard=%s layer=%s shape=%s em %s",

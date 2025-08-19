@@ -5,8 +5,15 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, Optional
+import os
 
 import pandas as pd
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
 
 
 def _read_jsonl(path: Path) -> Iterable[dict]:
@@ -49,7 +56,8 @@ def join_with_sonar(
             n_in += 1
             cp = str(obj.get(class_path_field, ""))
             if cp in wanted:
-                out.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                enriched = _enrich_with_vram_metrics(obj)
+                out.write(json.dumps(enriched, ensure_ascii=False) + "\n")
                 n_out += 1
 
 
@@ -69,6 +77,29 @@ def _write_jsonl(path: Path, rows: Iterable[dict]) -> None:
     with path.open("w", encoding="utf-8") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
+
+
+def _enrich_with_vram_metrics(record: dict) -> dict:
+    """Enriquecer registro de métricas com dados de VRAM se CUDA disponível."""
+    enriched = record.copy()
+    
+    if TORCH_AVAILABLE and torch.cuda.is_available():
+        use_gpu = os.getenv("USE_GPU", "1") == "1"
+        if use_gpu:
+            try:
+                enriched["vram_alloc_mb"] = torch.cuda.memory_allocated() / 2**20
+                enriched["vram_reserved_mb"] = torch.cuda.memory_reserved() / 2**20
+            except Exception:
+                enriched["vram_alloc_mb"] = None
+                enriched["vram_reserved_mb"] = None
+        else:
+            enriched["vram_alloc_mb"] = None
+            enriched["vram_reserved_mb"] = None
+    else:
+        enriched["vram_alloc_mb"] = None
+        enriched["vram_reserved_mb"] = None
+    
+    return enriched
 
 
 def generate_sonar_metrics(
